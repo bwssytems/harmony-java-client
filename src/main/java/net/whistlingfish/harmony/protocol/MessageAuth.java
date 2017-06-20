@@ -22,7 +22,7 @@ public class MessageAuth {
     public static class AuthRequest extends OAStanza {
         private LoginToken loginToken;
 
-        public AuthRequest() {
+    public AuthRequest(LoginToken loginToken) 
             super(MIME_TYPE);
             this.loginToken = loginToken;
             setType(IQ.Type.get);
