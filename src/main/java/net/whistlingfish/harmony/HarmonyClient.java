@@ -329,8 +329,8 @@ public class HarmonyClient {
         return config;
     }
 
-    private AuthRequest createPairSessionRequest() {
-        return new AuthRequest();
+    private AuthRequest createSessionRequest(LoginToken loginToken) {
+        return new AuthRequest(loginToken);
     }
 
     public void sendPing() {
