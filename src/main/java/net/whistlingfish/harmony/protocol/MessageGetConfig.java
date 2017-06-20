@@ -12,7 +12,7 @@ public class MessageGetConfig {
     /*
      * Request
      */
-    public static class GetConfigRequest extends OAStanza {
+    public static class GetConfigRequest extends OAPacket {
         public GetConfigRequest() {
             super(MIME_TYPE);
         }
@@ -26,7 +26,7 @@ public class MessageGetConfig {
     /*
      * Reply
      */
-    public static class GetConfigReply extends OAStanza {
+    public static class GetConfigReply extends OAPacket {
         private String contents;
 
         public GetConfigReply(String contents) {

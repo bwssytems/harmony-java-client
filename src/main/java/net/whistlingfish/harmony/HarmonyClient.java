@@ -1,8 +1,5 @@
 package net.whistlingfish.harmony;
 
-import static java.lang.String.format;
-import static net.whistlingfish.harmony.protocol.MessageHoldAction.HoldStatus.*;
-
 import java.io.IOException;
 import java.util.HashSet;
 import java.util.Map;
@@ -13,42 +10,10 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
-import org.jivesoftware.smack.ConnectionListener;
-import org.jivesoftware.smack.SmackException;
-import org.jivesoftware.smack.SmackException.NoResponseException;
-import org.jivesoftware.smack.SmackException.NotConnectedException;
-import org.jivesoftware.smack.StanzaCollector;
-import org.jivesoftware.smack.StanzaListener;
-import org.jivesoftware.smack.XMPPConnection;
-import org.jivesoftware.smack.XMPPConnection.FromMode;
-import org.jivesoftware.smack.XMPPException;
-import org.jivesoftware.smack.XMPPException.XMPPErrorException;
-import org.jivesoftware.smack.filter.StanzaFilter;
-import org.jivesoftware.smack.packet.Bind;
-import org.jivesoftware.smack.packet.ExtensionElement;
-import org.jivesoftware.smack.packet.Stanza;
-import org.jivesoftware.smack.provider.ProviderManager;
-import org.jivesoftware.smack.sasl.SASLMechanism;
-import org.jivesoftware.smack.sm.predicates.ForEveryStanza;
-import org.jivesoftware.smack.tcp.XMPPTCPConnection;
-import org.jivesoftware.smack.tcp.XMPPTCPConnectionConfiguration;
-import org.jxmpp.jid.parts.Resourcepart;
-import org.jxmpp.stringprep.XmppStringprepException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import com.google.inject.Guice;
-import com.google.inject.Injector;
-
 import net.whistlingfish.harmony.config.Activity;
 import net.whistlingfish.harmony.config.Device;
 import net.whistlingfish.harmony.config.HarmonyConfig;
 import net.whistlingfish.harmony.protocol.EmptyIncrementedIdReplyFilter;
-
-import net.whistlingfish.harmony.protocol.HarmonyBindIQProvider;
-import net.whistlingfish.harmony.protocol.HarmonyXMPPTCPConnection;
-import net.whistlingfish.harmony.protocol.LoginToken;
-
 import net.whistlingfish.harmony.protocol.MessageAuth.AuthReply;
 import net.whistlingfish.harmony.protocol.MessageAuth.AuthRequest;
 import net.whistlingfish.harmony.protocol.MessageGetConfig.GetConfigReply;
@@ -60,11 +25,36 @@ import net.whistlingfish.harmony.protocol.MessagePing.PingReply;
 import net.whistlingfish.harmony.protocol.MessagePing.PingRequest;
 import net.whistlingfish.harmony.protocol.MessageStartActivity.StartActivityReply;
 import net.whistlingfish.harmony.protocol.MessageStartActivity.StartActivityRequest;
+import net.whistlingfish.harmony.protocol.OAPacket;
 import net.whistlingfish.harmony.protocol.OAReplyFilter;
-import net.whistlingfish.harmony.protocol.OAStanza;
+
+import org.jivesoftware.smack.ConnectionConfiguration;
+import org.jivesoftware.smack.ConnectionListener;
+import org.jivesoftware.smack.PacketCollector;
+import org.jivesoftware.smack.PacketListener;
+import org.jivesoftware.smack.SASLAuthentication;
+import org.jivesoftware.smack.SmackException;
+import org.jivesoftware.smack.XMPPConnection;
+import org.jivesoftware.smack.SmackException.NoResponseException;
+import org.jivesoftware.smack.SmackException.NotConnectedException;
+import org.jivesoftware.smack.XMPPConnection.FromMode;
+import org.jivesoftware.smack.XMPPException;
+import org.jivesoftware.smack.XMPPException.XMPPErrorException;
+import org.jivesoftware.smack.filter.PacketFilter;
+import org.jivesoftware.smack.packet.Packet;
+import org.jivesoftware.smack.packet.PacketExtension;
+import org.jivesoftware.smack.tcp.XMPPTCPConnection;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.google.inject.Guice;
+import com.google.inject.Injector;
+
+import static java.lang.String.format;
+import static net.whistlingfish.harmony.protocol.MessageHoldAction.HoldStatus.PRESS;
+import static net.whistlingfish.harmony.protocol.MessageHoldAction.HoldStatus.RELEASE;
 
 public class HarmonyClient {
-
     private static final Logger logger = LoggerFactory.getLogger(HarmonyClient.class);
 
     public static final int DEFAULT_REPLY_TIMEOUT = 30_000;
@@ -74,8 +64,7 @@ public class HarmonyClient {
     private static final String DEFAULT_XMPP_USER = "guest@connect.logitech.com/gatorade.";
     private static final String DEFAULT_XMPP_PASSWORD = "gatorade.";
 
-    private boolean smackConfigured;
-    private HarmonyXMPPTCPConnection connection;
+    private XMPPTCPConnection connection;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
     private ScheduledFuture<?> heartbeat;
 
@@ -89,6 +78,7 @@ public class HarmonyClient {
 
     private Activity currentActivity;
 
+
     private Set<ActivityChangeListener> activityChangeListeners = new HashSet<>();
 
     public static HarmonyClient getInstance() {
@@ -96,90 +86,86 @@ public class HarmonyClient {
         return injector.getInstance(HarmonyClient.class);
     }
 
-    private void configureSmack() {
-        if (!smackConfigured) {
-            ProviderManager.addIQProvider(Bind.ELEMENT, Bind.NAMESPACE, new HarmonyBindIQProvider());
-            smackConfigured = true;
-        }
-    }
-
-    public void disconnect() {
-        if (connection != null) {
-            connection.disconnect();
-        }
-        if (heartbeat != null) {
+    public void disconnect(){
+    	if(connection != null){
+	    	try {
+				connection.disconnect();
+			} catch (NotConnectedException ignored) {
+				logger.debug("Connection is already closed.");
+			}
+    	}
+    	if (heartbeat != null) {
             heartbeat.cancel(false);
         }
     }
 
-    public void connect(String host) {
-        connect(host, null);
+    // This method is for backwards compatibility
+    public void connect(String host, String username, String password) {
+    	this.connect(host);
     }
-
-    public void connect(String host, LoginToken loginToken) {
-        configureSmack();
-
-        XMPPTCPConnectionConfiguration connectionConfig = createConnectionConfig(host, DEFAULT_PORT);
-        HarmonyXMPPTCPConnection authConnection = new HarmonyXMPPTCPConnection(connectionConfig);
-
+    
+    // No need for username password with pair method
+    public void connect(String host) {
+        ConnectionConfiguration connectionConfig = createConnectionConfig(host, DEFAULT_PORT);
+        XMPPTCPConnection authConnection = new XMPPTCPConnection(connectionConfig);
         try {
             addPacketLogging(authConnection, "auth");
 
             // Pair with the local hub and get the token
             authConnection.connect();
-            authConnection.login(DEFAULT_XMPP_USER, DEFAULT_XMPP_PASSWORD, Resourcepart.from("auth"));
+            authConnection.login(DEFAULT_XMPP_USER, DEFAULT_XMPP_PASSWORD, "auth");
             authConnection.setFromMode(FromMode.USER);
 
-            AuthRequest sessionRequest = createSessionRequest(loginToken);
-            AuthReply oaResponse = sendOAStanza(authConnection, sessionRequest, AuthReply.class);
+            AuthRequest sessionRequest = createPairSessionRequest();
+            AuthReply oaResponse = sendOAPacket(authConnection, sessionRequest, AuthReply.class);
 
             authConnection.disconnect();
 
-            connection = new HarmonyXMPPTCPConnection(connectionConfig);
+            connection = new XMPPTCPConnection(connectionConfig);
             addPacketLogging(connection, "main");
             connection.connect();
-            connection.login(oaResponse.getUsername(), oaResponse.getPassword(), Resourcepart.from("main"));
+            connection.login(oaResponse.getUsername(), oaResponse.getPassword(), "main");
             connection.setFromMode(FromMode.USER);
             connection.addConnectionListener(new ConnectionListener() {
+				
+				@Override
+				public void reconnectionSuccessful() {
+					getCurrentActivity();
+				}
+				
+				@Override
+				public void connected(XMPPConnection connection) {
+				}
 
-                @Override
-                public void reconnectionSuccessful() {
-                    getCurrentActivity();
-                }
+				@Override
+				public void authenticated(XMPPConnection connection) {
+				}
 
-                @Override
-                public void connected(XMPPConnection connection) {
-                }
+				@Override
+				public void connectionClosed() {
+				}
 
-                @Override
-                public void authenticated(XMPPConnection connection, boolean resumed) {
-                }
+				@Override
+				public void connectionClosedOnError(Exception e) {
+				}
 
-                @Override
-                public void connectionClosed() {
-                }
+				@Override
+				public void reconnectingIn(int seconds) {
+				}
 
-                @Override
-                public void connectionClosedOnError(Exception e) {
-                }
-
-                @Override
-                public void reconnectingIn(int seconds) {
-                }
-
-                @Override
-                public void reconnectionFailed(Exception e) {
-                }
-
-            });
-
+				@Override
+				public void reconnectionFailed(Exception e) {
+				}
+				
+			});
+            
             heartbeat = scheduler.scheduleAtFixedRate(new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        if (connection.isConnected()) {
-                            sendPing();
-                        }
+                    	if(connection.isConnected()){
+                    		sendPing();
+                    	}
                     } catch (Exception e) {
                         logger.warn("Send heartbeat failed", e);
                     }
@@ -189,24 +175,23 @@ public class HarmonyClient {
             monitorActivityChanges();
             getCurrentActivity();
 
-        } catch (InterruptedException | XMPPException | SmackException | IOException e) {
+        } catch (XMPPException | SmackException | IOException e) {
             throw new RuntimeException("Failed communicating with Harmony Hub", e);
         }
     }
 
     private void monitorActivityChanges() {
-        connection.addSyncStanzaListener(new StanzaListener() {
+        connection.addPacketListener(new PacketListener() {
             @Override
-            public void processStanza(Stanza stanza) throws NotConnectedException {
+            public void processPacket(Packet packet) throws NotConnectedException {
                 updateCurrentActivity(getCurrentActivity());
             }
-        }, new StanzaFilter() {
+        }, new PacketFilter() {
             @Override
-            public boolean accept(Stanza stanza) {
-                ExtensionElement event = stanza.getExtension("event", "connect.logitech.com");
-                if (event == null) {
+            public boolean accept(Packet packet) {
+                PacketExtension event = packet.getExtension("event", "connect.logitech.com");
+                if (event == null)
                     return false;
-                }
                 return true;
             }
         });
@@ -216,7 +201,7 @@ public class HarmonyClient {
         if (currentActivity != activity) {
             currentActivity = activity;
             for (ActivityChangeListener listener : activityChangeListeners) {
-                logger.debug("listener[{}] notified: {}", listener, currentActivity);
+            	logger.debug("listener[{}] notified: {}", listener, currentActivity);
                 listener.activityStarted(currentActivity);
             }
         }
@@ -228,10 +213,10 @@ public class HarmonyClient {
     }
 
     public synchronized void addListener(ActivityChangeListener listener) {
-        logger.debug("listener[{}] added", listener);
+    	logger.debug("listener[{}] added", listener);
         activityChangeListeners.add(listener);
         if (currentActivity != null) {
-            logger.debug("listener[{}] notified: {}", listener, currentActivity);
+        	logger.debug("listener[{}] notified: {}", listener, currentActivity);
             listener.activityStarted(currentActivity);
         }
     }
@@ -244,18 +229,18 @@ public class HarmonyClient {
         activityChangeListeners.remove(activityChangeListener);
     }
 
-    private Stanza sendOAStanza(XMPPTCPConnection authConnection, OAStanza stanza) {
-        return sendOAStanza(authConnection, stanza, DEFAULT_REPLY_TIMEOUT);
+    private Packet sendOAPacket(XMPPTCPConnection authConnection, OAPacket packet) {
+        return sendOAPacket(authConnection, packet, DEFAULT_REPLY_TIMEOUT);
     }
 
-    private Stanza sendOAStanza(XMPPTCPConnection authConnection, OAStanza stanza, long replyTimeout) {
-        StanzaCollector collector = authConnection
-                .createStanzaCollector(new EmptyIncrementedIdReplyFilter(stanza, authConnection));
+    private Packet sendOAPacket(XMPPTCPConnection authConnection, OAPacket packet, long replyTimeout) {
+        PacketCollector collector = authConnection.createPacketCollector(new EmptyIncrementedIdReplyFilter(packet,
+                authConnection));
         messageLock.lock();
         try {
-            authConnection.sendStanza(stanza);
-            return getNextStanzaSkipContinues(collector, replyTimeout, authConnection);
-        } catch (InterruptedException | SmackException | XMPPErrorException e) {
+            authConnection.sendPacket(packet);
+            return getNextPacketSkipContinues(collector, replyTimeout);
+        } catch (SmackException | XMPPErrorException e) {
             throw new RuntimeException("Failed communicating with Harmony Hub", e);
         } finally {
             messageLock.unlock();
@@ -263,19 +248,18 @@ public class HarmonyClient {
         }
     }
 
-    private <R extends OAStanza> R sendOAStanza(XMPPTCPConnection authConnection, OAStanza stanza,
-            Class<R> replyClass) {
-        return sendOAStanza(authConnection, stanza, replyClass, DEFAULT_REPLY_TIMEOUT);
+    private <R extends OAPacket> R sendOAPacket(XMPPTCPConnection authConnection, OAPacket packet, Class<R> replyClass) {
+        return sendOAPacket(authConnection, packet, replyClass, DEFAULT_REPLY_TIMEOUT);
     }
 
-    private <R extends OAStanza> R sendOAStanza(XMPPTCPConnection authConnection, OAStanza stanza, Class<R> replyClass,
+    private <R extends OAPacket> R sendOAPacket(XMPPTCPConnection authConnection, OAPacket packet, Class<R> replyClass,
             long replyTimeout) {
-        StanzaCollector collector = authConnection.createStanzaCollector(new OAReplyFilter(stanza, authConnection));
+        PacketCollector collector = authConnection.createPacketCollector(new OAReplyFilter(packet, authConnection));
         messageLock.lock();
         try {
-            authConnection.sendStanza(stanza);
-            return replyClass.cast(getNextStanzaSkipContinues(collector, replyTimeout, authConnection));
-        } catch (InterruptedException | SmackException | XMPPErrorException e) {
+            authConnection.sendPacket(packet);
+            return replyClass.cast(getNextPacketSkipContinues(collector, replyTimeout));
+        } catch (SmackException | XMPPErrorException e) {
             throw new RuntimeException("Failed communicating with Harmony Hub", e);
         } finally {
             messageLock.unlock();
@@ -283,14 +267,14 @@ public class HarmonyClient {
         }
     }
 
-    private Stanza getNextStanzaSkipContinues(StanzaCollector collector, long replyTimeout,
-            XMPPTCPConnection authConnection) throws InterruptedException, NoResponseException, XMPPErrorException {
+    private Packet getNextPacketSkipContinues(PacketCollector collector, long replyTimeout) throws NoResponseException,
+            XMPPErrorException {
         while (true) {
-            Stanza reply = collector.nextResult(replyTimeout);
+            Packet reply = collector.nextResult(replyTimeout);
             if (reply == null) {
-                throw NoResponseException.newWith(authConnection, collector);
+                throw new NoResponseException();
             }
-            if (reply instanceof OAStanza && ((OAStanza) reply).isContinuePacket()) {
+            if (reply instanceof OAPacket && ((OAPacket) reply).isContinuePacket()) {
                 continue;
             }
             return reply;
@@ -298,69 +282,65 @@ public class HarmonyClient {
     }
 
     private void addPacketLogging(XMPPTCPConnection authConnection, final String prefix) {
-        authConnection.addPacketSendingListener(new StanzaListener() {
+        PacketFilter allPacketsFilter = new PacketFilter() {
             @Override
-            public void processStanza(Stanza stanza) {
-                logger.trace("{}>>> {}", prefix, stanza.toXML().toString().replaceAll("\n", ""));
+            public boolean accept(Packet packet) {
+                return true;
             }
-        }, ForEveryStanza.INSTANCE);
-        authConnection.addSyncStanzaListener(new StanzaListener() {
+        };
+        authConnection.addPacketSendingListener(new PacketListener() {
             @Override
-            public void processStanza(Stanza stanza) throws NotConnectedException, InterruptedException {
-                logger.trace("<<<{} {}", prefix, stanza.toXML().toString().replaceAll("\n", ""));
+            public void processPacket(Packet packet) {
+                logger.trace("{}>>> {}", prefix, packet.toXML().toString().replaceAll("\n", ""));
             }
-        }, ForEveryStanza.INSTANCE);
+        }, allPacketsFilter);
+        authConnection.addPacketListener(new PacketListener() {
+            @Override
+            public void processPacket(Packet packet) throws NotConnectedException {
+                logger.trace("<<<{} {}", prefix, packet.toXML().toString().replaceAll("\n", ""));
+            }
+        }, allPacketsFilter);
     }
 
-    private XMPPTCPConnectionConfiguration createConnectionConfig(String host, int port) {
-        try {
-            return XMPPTCPConnectionConfiguration.builder().setHost(host).setPort(port).setXmppDomain(host)
-                    .addEnabledSaslMechanism(SASLMechanism.PLAIN).build();
-        } catch (XmppStringprepException e) {
-            throw new RuntimeException(e);
-        }
+    private ConnectionConfiguration createConnectionConfig(String host, int port) {
+        SASLAuthentication.supportSASLMechanism("PLAIN");
+
+        ConnectionConfiguration config = new ConnectionConfiguration(host, port);
+        return config;
     }
 
     public HarmonyConfig getConfig() {
         if (config == null) {
-            config = HarmonyConfig
-                    .parse(sendOAStanza(connection, new GetConfigRequest(), GetConfigReply.class).getConfig());
+            config = HarmonyConfig.parse(sendOAPacket(connection, new GetConfigRequest(), GetConfigReply.class)
+                    .getConfig());
         }
         return config;
     }
 
-    private AuthRequest createSessionRequest(LoginToken loginToken) {
-        return new AuthRequest(loginToken);
+    private AuthRequest createPairSessionRequest() {
+        return new AuthRequest();
     }
 
     public void sendPing() {
-        sendOAStanza(connection, new PingRequest(), PingReply.class);
+        sendOAPacket(connection, new PingRequest(), PingReply.class);
     }
 
     public void pressButton(int deviceId, String button) {
-    	pressButton(deviceId, button, 200);
-    }
-
-    public void pressButton(int deviceId, String button, int pressTime) {
-        sendOAStanza(connection, new HoldActionRequest(deviceId, button, PRESS));
+        sendOAPacket(connection, new HoldActionRequest(deviceId, button, PRESS));
         try {
-            Thread.sleep(pressTime);
+            Thread.sleep(200);
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
-        sendOAStanza(connection, new HoldActionRequest(deviceId, button, RELEASE));
+        sendOAPacket(connection, new HoldActionRequest(deviceId, button, RELEASE));
     }
 
     public void pressButton(String deviceName, String button) {
-    	pressButton(deviceName, button, 200);
-    }
-    
-    public void pressButton(String deviceName, String button, int pressTime) {
         Device device = getConfig().getDeviceByName(deviceName);
         if (device == null) {
             throw new IllegalArgumentException(format("Unknown device '%s'", deviceName));
         }
-        pressButton(device.getId(), button, pressTime);
+        pressButton(device.getId(), button);
     }
 
     public Map<Integer, String> getDeviceLabels() {
@@ -368,7 +348,7 @@ public class HarmonyClient {
     }
 
     public Activity getCurrentActivity() {
-        GetCurrentActivityReply reply = sendOAStanza(connection, new GetCurrentActivityRequest(),
+        GetCurrentActivityReply reply = sendOAPacket(connection, new GetCurrentActivityRequest(),
                 GetCurrentActivityReply.class);
         HarmonyConfig config = getConfig();
         return updateCurrentActivity(config.getActivityById(reply.getResult()));
@@ -378,7 +358,7 @@ public class HarmonyClient {
         if (getConfig().getActivityById(activityId) == null) {
             throw new IllegalArgumentException(format("Unknown activity '%d'", activityId));
         }
-        sendOAStanza(connection, new StartActivityRequest(activityId), StartActivityReply.class,
+        sendOAPacket(connection, new StartActivityRequest(activityId), StartActivityReply.class,
                 START_ACTIVITY_REPLY_TIMEOUT);
     }
 

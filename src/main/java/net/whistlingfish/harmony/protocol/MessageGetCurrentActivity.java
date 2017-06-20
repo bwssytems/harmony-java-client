@@ -29,7 +29,7 @@ public class MessageGetCurrentActivity {
     /*
      * Reply
      */
-    public static class GetCurrentActivityReply extends OAStanza {
+    public static class GetCurrentActivityReply extends OAPacket {
         private int result;
 
         public GetCurrentActivityReply() {

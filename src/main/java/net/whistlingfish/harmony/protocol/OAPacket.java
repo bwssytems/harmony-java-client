@@ -6,22 +6,17 @@ import java.util.Map;
 import java.util.Map.Entry;
 
 import org.jivesoftware.smack.packet.IQ;
-import org.jivesoftware.smack.packet.SimpleIQ;
-import org.jivesoftware.smack.packet.XMPPError;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.common.base.Joiner;
 
-public abstract class OAStanza extends IQ {
+public abstract class OAPacket extends IQ {
     private static final long CREATION_TIME = System.currentTimeMillis();
 
     private final String mimeType;
     private String statusCode;
     private String errorString;
 
-    public OAStanza(String mimeType) {
-        super(new SimpleIQ("oa", "connect.logitech.com") {
-        });
+    public OAPacket(String mimeType) {
         this.mimeType = mimeType;
     }
 
@@ -33,12 +28,6 @@ public abstract class OAStanza extends IQ {
         this.statusCode = statusCode;
     }
 
-    @Override
-    @JsonIgnore // Subclasses use a Jackson object mapper that throws an exception for properties with multiple setters
-    public void setError(XMPPError error) {
-        super.setError(error);
-    }
-
     public String getErrorString() {
         return errorString;
     }
@@ -48,18 +37,17 @@ public abstract class OAStanza extends IQ {
     }
 
     @Override
-    protected IQChildElementXmlStringBuilder getIQChildElementBuilder(IQChildElementXmlStringBuilder xml) {
-        if (statusCode != null) {
-            xml.attribute("errorcode", statusCode);
-        }
-        if (errorString != null) {
-            xml.attribute("errorstring", errorString);
-        }
-
-        xml.attribute("mime", getMimeType());
-        xml.rightAngleBracket();
-        xml.append(joinChildElementPairs(getChildElementPairs()));
-        return xml;
+    public CharSequence getChildElementXML() {
+        StringBuilder sb = new StringBuilder() //
+                .append("\n<oa xmlns=\"connect.logitech.com\"");
+        if (statusCode != null)
+            sb.append(" errorcode=\"").append(statusCode).append("\"");
+        if (errorString != null)
+            sb.append(" errorstring=\"").append(errorString).append("\"");
+        sb.append(" mime=\"").append(getMimeType()).append("\">") //
+                .append(joinChildElementPairs(getChildElementPairs()))
+                .append("</oa>\n");
+        return sb.toString();
     }
 
     protected String getMimeType() {

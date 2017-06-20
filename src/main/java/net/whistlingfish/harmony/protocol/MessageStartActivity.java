@@ -35,7 +35,7 @@ public class MessageStartActivity {
     /*
      * Reply (unused)
      */
-    public static class StartActivityReply extends OAStanza {
+    public static class StartActivityReply extends OAPacket {
         public StartActivityReply() {
             super(MIME_TYPE);
         }
